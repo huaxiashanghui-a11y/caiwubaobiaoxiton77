@@ -1,18 +1,139 @@
 const express = require('express');
 const path = require('path');
 const moment = require('moment');
+const postgres = require('postgres');
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // 中间件
 app.use(express.json());
 app.use(express.static('public'));
 
-// 数据库
-const Database = require('better-sqlite3');
-const dbPath = path.join(__dirname, 'database.db');
-const db = new Database(dbPath);
-db.pragma('foreign_keys = ON');
+// 数据库连接
+const sql = postgres(process.env.DATABASE_URL || 'postgres://localhost:5432/financial', {
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
+});
+
+// ==================== 初始化数据库表 ====================
+async function initDatabase() {
+  try {
+    // 折扣收益表
+    await sql`
+      CREATE TABLE IF NOT EXISTS discount_income (
+        id SERIAL PRIMARY KEY,
+        date TEXT NOT NULL,
+        amount NUMERIC(10,2) NOT NULL,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+
+    // 提成奖励表
+    await sql`
+      CREATE TABLE IF NOT EXISTS commission_reward (
+        id SERIAL PRIMARY KEY,
+        date TEXT NOT NULL,
+        amount NUMERIC(10,2) NOT NULL,
+        product_name TEXT,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+
+    // 积分优惠表
+    await sql`
+      CREATE TABLE IF NOT EXISTS points_discount (
+        id SERIAL PRIMARY KEY,
+        date TEXT NOT NULL,
+        amount NUMERIC(10,2) NOT NULL,
+        customer_name TEXT,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+
+    // 资金支出表
+    await sql`
+      CREATE TABLE IF NOT EXISTS expense (
+        id SERIAL PRIMARY KEY,
+        date TEXT NOT NULL,
+        amount NUMERIC(10,2) NOT NULL,
+        category TEXT NOT NULL,
+        payment_method TEXT NOT NULL,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+
+    // 资金分类表（各币种余额）
+    await sql`
+      CREATE TABLE IF NOT EXISTS balance (
+        id SERIAL PRIMARY KEY,
+        payment_method TEXT NOT NULL UNIQUE,
+        balance NUMERIC(10,2) DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+
+    // 赊账表
+    await sql`
+      CREATE TABLE IF NOT EXISTS credit_account (
+        id SERIAL PRIMARY KEY,
+        date TEXT NOT NULL,
+        customer_name TEXT NOT NULL,
+        telegram_account TEXT,
+        wechat_account TEXT,
+        phone TEXT,
+        amount NUMERIC(10,2) NOT NULL,
+        status TEXT NOT NULL DEFAULT '未结账',
+        settled_date TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+
+    // 骑手表
+    await sql`
+      CREATE TABLE IF NOT EXISTS rider (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+
+    // 骑手补贴表
+    await sql`
+      CREATE TABLE IF NOT EXISTS rider_subsidy (
+        id SERIAL PRIMARY KEY,
+        date TEXT NOT NULL,
+        rider_id INTEGER NOT NULL,
+        subsidy_amount NUMERIC(10,2) DEFAULT 0,
+        advance_amount NUMERIC(10,2) DEFAULT 0,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (rider_id) REFERENCES rider(id)
+      )
+    `;
+
+    // 初始化默认骑手
+    const riders = ['小仙', '阿兴', '小耀'];
+    for (const name of riders) {
+      await sql`INSERT INTO rider (name) VALUES (${name}) ON CONFLICT (name) DO NOTHING`;
+    }
+
+    // 初始化默认资金分类余额
+    const paymentMethods = ['微信', '支付宝', '云闪付', 'KBZ', 'USDT', '人民币现金', '缅币'];
+    for (const method of paymentMethods) {
+      await sql`INSERT INTO balance (payment_method, balance) VALUES (${method}, 0) ON CONFLICT (payment_method) DO NOTHING`;
+    }
+
+    console.log('数据库初始化完成！');
+  } catch (error) {
+    console.error('数据库初始化失败:', error);
+  }
+}
+
+// 初始化数据库
+initDatabase();
 
 // ==================== 辅助函数 ====================
 
@@ -25,129 +146,139 @@ const getMonthStart = () => moment().startOf('month').format('YYYY-MM-DD');
 // ==================== API 路由 ====================
 
 // 1. 仪表盘数据
-app.get('/api/dashboard', (req, res) => {
+app.get('/api/dashboard', async (req, res) => {
   try {
-    const dashboard = db.prepare('SELECT * FROM dashboard_view').get();
-    res.json(dashboard);
+    const today = getToday();
+    const discount_balance = (await sql`SELECT COALESCE(SUM(amount), 0) as total FROM discount_income WHERE date = ${today}`)[0]?.total || 0;
+    const points_balance = (await sql`SELECT COALESCE(SUM(amount), 0) as total FROM points_discount WHERE date = ${today}`)[0]?.total || 0;
+    const commission_balance = (await sql`SELECT COALESCE(SUM(amount), 0) as total FROM commission_reward WHERE date = ${today}`)[0]?.total || 0;
+    const expense_balance = (await sql`SELECT COALESCE(SUM(amount), 0) as total FROM expense WHERE date = ${today}`)[0]?.total || 0;
+    const subsidy_balance = (await sql`SELECT COALESCE(SUM(subsidy_amount + advance_amount), 0) as total FROM rider_subsidy WHERE date = ${today}`)[0]?.total || 0;
+    const credit_balance = (await sql`SELECT COALESCE(SUM(amount), 0) as total FROM credit_account WHERE status = '未结账'`)[0]?.total || 0;
+
+    const daily_balance = discount_balance + commission_balance - expense_balance - subsidy_balance;
+
+    res.json({
+      report_date: today,
+      discount_balance,
+      points_balance,
+      commission_balance,
+      expense_balance,
+      subsidy_balance,
+      credit_balance,
+      daily_balance
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // 2. 折扣收益
-app.get('/api/discount-income', (req, res) => {
+app.get('/api/discount-income', async (req, res) => {
   try {
     const date = req.query.date || getToday();
-    const records = db.prepare('SELECT * FROM discount_income WHERE date = ? ORDER BY created_at DESC').all(date);
-    const total = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM discount_income WHERE date = ?').get(date);
-    res.json({ records, total: total.total });
+    const records = await sql`SELECT * FROM discount_income WHERE date = ${date} ORDER BY created_at DESC`;
+    const total = (await sql`SELECT COALESCE(SUM(amount), 0) as total FROM discount_income WHERE date = ${date}`)[0]?.total || 0;
+    res.json({ records, total });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/discount-income', (req, res) => {
+app.post('/api/discount-income', async (req, res) => {
   try {
     const { date, amount, description } = req.body;
-    const stmt = db.prepare('INSERT INTO discount_income (date, amount, description) VALUES (?, ?, ?)');
-    const result = stmt.run(date || getToday(), amount, description);
-    res.json({ id: result.lastInsertRowid, message: '折扣收益记录成功' });
+    const result = await sql`INSERT INTO discount_income (date, amount, description) VALUES (${date || getToday()}, ${amount}, ${description})`;
+    res.json({ id: result[0]?.id, message: '折扣收益记录成功' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // 3. 提成奖励
-app.get('/api/commission', (req, res) => {
+app.get('/api/commission', async (req, res) => {
   try {
     const date = req.query.date || getToday();
-    const records = db.prepare('SELECT * FROM commission_reward WHERE date = ? ORDER BY created_at DESC').all(date);
-    const total = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM commission_reward WHERE date = ?').get(date);
-    res.json({ records, total: total.total });
+    const records = await sql`SELECT * FROM commission_reward WHERE date = ${date} ORDER BY created_at DESC`;
+    const total = (await sql`SELECT COALESCE(SUM(amount), 0) as total FROM commission_reward WHERE date = ${date}`)[0]?.total || 0;
+    res.json({ records, total });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/commission', (req, res) => {
+app.post('/api/commission', async (req, res) => {
   try {
     const { date, amount, product_name, description } = req.body;
-    const stmt = db.prepare('INSERT INTO commission_reward (date, amount, product_name, description) VALUES (?, ?, ?, ?)');
-    const result = stmt.run(date || getToday(), amount, product_name, description);
-    res.json({ id: result.lastInsertRowid, message: '提成奖励记录成功' });
+    const result = await sql`INSERT INTO commission_reward (date, amount, product_name, description) VALUES (${date || getToday()}, ${amount}, ${product_name}, ${description})`;
+    res.json({ id: result[0]?.id, message: '提成奖励记录成功' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // 4. 积分优惠
-app.get('/api/points-discount', (req, res) => {
+app.get('/api/points-discount', async (req, res) => {
   try {
     const date = req.query.date || getToday();
-    const records = db.prepare('SELECT * FROM points_discount WHERE date = ? ORDER BY created_at DESC').all(date);
-    const total = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM points_discount WHERE date = ?').get(date);
-    res.json({ records, total: total.total });
+    const records = await sql`SELECT * FROM points_discount WHERE date = ${date} ORDER BY created_at DESC`;
+    const total = (await sql`SELECT COALESCE(SUM(amount), 0) as total FROM points_discount WHERE date = ${date}`)[0]?.total || 0;
+    res.json({ records, total });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/points-discount', (req, res) => {
+app.post('/api/points-discount', async (req, res) => {
   try {
     const { date, amount, customer_name, description } = req.body;
-    const stmt = db.prepare('INSERT INTO points_discount (date, amount, customer_name, description) VALUES (?, ?, ?, ?)');
-    const result = stmt.run(date || getToday(), amount, customer_name, description);
-    res.json({ id: result.lastInsertRowid, message: '积分优惠记录成功' });
+    const result = await sql`INSERT INTO points_discount (date, amount, customer_name, description) VALUES (${date || getToday()}, ${amount}, ${customer_name}, ${description})`;
+    res.json({ id: result[0]?.id, message: '积分优惠记录成功' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // 5. 资金支出
-app.get('/api/expense', (req, res) => {
+app.get('/api/expense', async (req, res) => {
   try {
     const date = req.query.date || getToday();
-    const records = db.prepare('SELECT * FROM expense WHERE date = ? ORDER BY created_at DESC').all(date);
-    const total = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM expense WHERE date = ?').get(date);
-    res.json({ records, total: total.total });
+    const records = await sql`SELECT * FROM expense WHERE date = ${date} ORDER BY created_at DESC`;
+    const total = (await sql`SELECT COALESCE(SUM(amount), 0) as total FROM expense WHERE date = ${date}`)[0]?.total || 0;
+    res.json({ records, total });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/expense', (req, res) => {
+app.post('/api/expense', async (req, res) => {
   try {
     const { date, amount, category, payment_method, description } = req.body;
 
-    // 插入支出记录
-    const stmt = db.prepare('INSERT INTO expense (date, amount, category, payment_method, description) VALUES (?, ?, ?, ?, ?)');
-    const result = stmt.run(date || getToday(), amount, category, payment_method, description);
+    const result = await sql`INSERT INTO expense (date, amount, category, payment_method, description) VALUES (${date || getToday()}, ${amount}, ${category}, ${payment_method}, ${description})`;
 
-    // 扣减对应支付方式余额
-    const updateBalance = db.prepare('UPDATE balance SET balance = balance - ?, updated_at = CURRENT_TIMESTAMP WHERE payment_method = ?');
-    updateBalance.run(amount, payment_method);
+    await sql`UPDATE balance SET balance = balance - ${amount}, updated_at = CURRENT_TIMESTAMP WHERE payment_method = ${payment_method}`;
 
-    res.json({ id: result.lastInsertRowid, message: '支出记录成功，余额已更新' });
+    res.json({ id: result[0]?.id, message: '支出记录成功，余额已更新' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // 6. 资金分类余额
-app.get('/api/balance', (req, res) => {
+app.get('/api/balance', async (req, res) => {
   try {
-    const balances = db.prepare('SELECT * FROM balance ORDER BY payment_method').all();
+    const balances = await sql`SELECT * FROM balance ORDER BY payment_method`;
     res.json(balances);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/balance', (req, res) => {
+app.post('/api/balance', async (req, res) => {
   try {
     const { payment_method, balance } = req.body;
-    const stmt = db.prepare('INSERT OR REPLACE INTO balance (payment_method, balance, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
-    stmt.run(payment_method, balance);
+    await sql`INSERT INTO balance (payment_method, balance, updated_at) VALUES (${payment_method}, ${balance}, CURRENT_TIMESTAMP) ON CONFLICT (payment_method) DO UPDATE SET balance = ${balance}, updated_at = CURRENT_TIMESTAMP`;
     res.json({ message: '余额更新成功' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -155,49 +286,40 @@ app.post('/api/balance', (req, res) => {
 });
 
 // 7. 赊账列表
-app.get('/api/credit', (req, res) => {
+app.get('/api/credit', async (req, res) => {
   try {
     const { status } = req.query;
-    let query = 'SELECT * FROM credit_account';
-    const params = [];
-
+    let records;
     if (status) {
-      query += ' WHERE status = ?';
-      params.push(status);
+      records = await sql`SELECT * FROM credit_account WHERE status = ${status} ORDER BY date DESC, created_at DESC`;
+    } else {
+      records = await sql`SELECT * FROM credit_account ORDER BY date DESC, created_at DESC`;
     }
 
-    query += ' ORDER BY date DESC, created_at DESC';
-    const records = db.prepare(query).all(...params);
+    const unpaid_total = (await sql`SELECT COALESCE(SUM(amount), 0) as total FROM credit_account WHERE status = '未结账'`)[0]?.total || 0;
+    const paid_total = (await sql`SELECT COALESCE(SUM(amount), 0) as total FROM credit_account WHERE status = '已结账'`)[0]?.total || 0;
 
-    const unpaid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM credit_account WHERE status = "未结账"').get();
-    const paid = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM credit_account WHERE status = "已结账"').get();
-
-    res.json({ records, unpaid_total: unpaid.total, paid_total: paid.total });
+    res.json({ records, unpaid_total, paid_total });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/credit', (req, res) => {
+app.post('/api/credit', async (req, res) => {
   try {
     const { date, customer_name, telegram_account, wechat_account, phone, amount } = req.body;
-    const stmt = db.prepare(`
-      INSERT INTO credit_account (date, customer_name, telegram_account, wechat_account, phone, amount, status)
-      VALUES (?, ?, ?, ?, ?, ?, '未结账')
-    `);
-    const result = stmt.run(date || getToday(), customer_name, telegram_account, wechat_account, phone, amount);
-    res.json({ id: result.lastInsertRowid, message: '赊账记录成功' });
+    const result = await sql`INSERT INTO credit_account (date, customer_name, telegram_account, wechat_account, phone, amount, status) VALUES (${date || getToday()}, ${customer_name}, ${telegram_account}, ${wechat_account}, ${phone}, ${amount}, '未结账')`;
+    res.json({ id: result[0]?.id, message: '赊账记录成功' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.put('/api/credit/:id/settle', (req, res) => {
+app.put('/api/credit/:id/settle', async (req, res) => {
   try {
     const id = req.params.id;
     const settled_date = req.body.settled_date || getToday();
-    const stmt = db.prepare('UPDATE credit_account SET status = "已结账", settled_date = ? WHERE id = ?');
-    stmt.run(settled_date, id);
+    await sql`UPDATE credit_account SET status = '已结账', settled_date = ${settled_date} WHERE id = ${id}`;
     res.json({ message: '结账成功' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -205,23 +327,22 @@ app.put('/api/credit/:id/settle', (req, res) => {
 });
 
 // 8. 骑手
-app.get('/api/riders', (req, res) => {
+app.get('/api/riders', async (req, res) => {
   try {
-    const riders = db.prepare('SELECT * FROM rider ORDER BY name').all();
+    const riders = await sql`SELECT * FROM rider ORDER BY name`;
     res.json(riders);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/riders', (req, res) => {
+app.post('/api/riders', async (req, res) => {
   try {
     const { name } = req.body;
-    const stmt = db.prepare('INSERT INTO rider (name) VALUES (?)');
-    const result = stmt.run(name);
-    res.json({ id: result.lastInsertRowid, message: '骑手添加成功' });
+    const result = await sql`INSERT INTO rider (name) VALUES (${name})`;
+    res.json({ id: result[0]?.id, message: '骑手添加成功' });
   } catch (error) {
-    if (error.message.includes('UNIQUE constraint')) {
+    if (error.message.includes('duplicate key')) {
       res.status(400).json({ error: '该骑手已存在' });
     } else {
       res.status(500).json({ error: error.message });
@@ -230,77 +351,66 @@ app.post('/api/riders', (req, res) => {
 });
 
 // 9. 骑手补贴
-app.get('/api/rider-subsidy', (req, res) => {
+app.get('/api/rider-subsidy', async (req, res) => {
   try {
     const { range, rider_id, date } = req.query;
 
-    let where = 'WHERE 1=1';
+    let query = sql`SELECT rs.*, r.name as rider_name FROM rider_subsidy rs JOIN rider r ON rs.rider_id = r.id WHERE 1=1`;
     const params = [];
 
     if (range === 'month') {
-      where += ' AND date >= ?';
-      params.push(getMonthStart());
+      query = query(sql`AND date >= ${getMonthStart()}`);
     } else if (date) {
-      where += ' AND date = ?';
-      params.push(date);
+      query = query(sql`AND date = ${date}`);
     }
 
     if (rider_id) {
-      where += ' AND rider_id = ?';
-      params.push(rider_id);
+      query = query(sql`AND rider_id = ${rider_id}`);
     }
 
-    const records = db.prepare(`
-      SELECT rs.*, r.name as rider_name
-      FROM rider_subsidy rs
-      JOIN rider r ON rs.rider_id = r.id
-      ${where}
-      ORDER BY date DESC, created_at DESC
-    `).all(...params);
+    const records = await query.orderBy(sql`date DESC, created_at DESC`);
 
-    // 统计
-    const totalSubsidy = db.prepare(`SELECT COALESCE(SUM(subsidy_amount), 0) as total FROM rider_subsidy ${where}`).get(...params);
-    const totalAdvance = db.prepare(`SELECT COALESCE(SUM(advance_amount), 0) as total FROM rider_subsidy ${where}`).get(...params);
+    let total_subsidy = 0;
+    let total_advance = 0;
 
-    res.json({
-      records,
-      total_subsidy: totalSubsidy.total,
-      total_advance: totalAdvance.total
-    });
+    for (const r of records) {
+      total_subsidy += Number(r.subsidy_amount) || 0;
+      total_advance += Number(r.advance_amount) || 0;
+    }
+
+    res.json({ records, total_subsidy, total_advance });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/rider-subsidy', (req, res) => {
+app.post('/api/rider-subsidy', async (req, res) => {
   try {
     const { date, rider_id, subsidy_amount, advance_amount, description } = req.body;
-    const stmt = db.prepare('INSERT INTO rider_subsidy (date, rider_id, subsidy_amount, advance_amount, description) VALUES (?, ?, ?, ?, ?)');
-    const result = stmt.run(date || getToday(), rider_id, subsidy_amount || 0, advance_amount || 0, description);
-    res.json({ id: result.lastInsertRowid, message: '补贴记录成功' });
+    const result = await sql`INSERT INTO rider_subsidy (date, rider_id, subsidy_amount, advance_amount, description) VALUES (${date || getToday()}, ${rider_id}, ${subsidy_amount || 0}, ${advance_amount || 0}, ${description})`;
+    res.json({ id: result[0]?.id, message: '补贴记录成功' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // 10. 资金列表（按支付方式统计）
-app.get('/api/expense-summary', (req, res) => {
+app.get('/api/expense-summary', async (req, res) => {
   try {
     const date = req.query.date || getToday();
 
-    const byMethod = db.prepare(`
-      SELECT payment_method, COALESCE(SUM(amount), 0) as total
-      FROM expense
-      WHERE date = ?
-      GROUP BY payment_method
-    `).all(date);
+    const byMethod = await sql`SELECT payment_method, COALESCE(SUM(amount), 0) as total FROM expense WHERE date = ${date} GROUP BY payment_method`;
+    const grandTotal = (await sql`SELECT COALESCE(SUM(amount), 0) as total FROM expense WHERE date = ${date}`)[0]?.total || 0;
 
-    const grandTotal = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM expense WHERE date = ?').get(date);
-
-    res.json({ records: byMethod, total: grandTotal.total });
+    res.json({ records: byMethod, total: grandTotal });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// 健康检查（Vercel 需要）
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
 });
 
 // 根路由
@@ -308,6 +418,6 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`财务报表系统运行中: http://localhost:${PORT}`);
 });

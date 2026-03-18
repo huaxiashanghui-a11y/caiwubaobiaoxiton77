@@ -1,0 +1,16 @@
+[Unit]
+Description=Financial Report System - 北苍星际速充
+After=network.target
+
+[Service]
+Type=simple
+User=openclaw
+WorkingDirectory=/home/openclaw/.openclaw/workspace/financial-report-system
+ExecStart=/usr/bin/node /home/openclaw/.openclaw/workspace/financial-report-system/server.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -20,44 +20,31 @@
 ## 技术栈
 
 - **后端**: Node.js + Express
-- **数据库**: SQLite (better-sqlite3)
+- **数据库**: PostgreSQL (Neon)
 - **前端**: 原生 HTML/CSS/JavaScript
+- **部署**: Vercel
 
-## 快速开始
+## 部署说明
 
-### 1. 安装依赖
+### 本地开发
 
-```bash
-npm install
-```
+1. 复制 `.env.example` 到 `.env`
+2. 配置 `DATABASE_URL` 环境变量
+3. 安装依赖：`npm install`
+4. 启动服务：`npm start`
 
-### 2. 初始化数据库
+### Vercel 部署
 
-```bash
-node init-db.js
-```
+1. 连接 GitHub 仓库到 Vercel
+2. 配置环境变量 `DATABASE_URL`
+3. 部署完成！
 
-### 3. 启动服务
+## 环境变量
 
-```bash
-npm start
-```
-
-### 4. 访问系统
-
-打开浏览器访问: http://localhost:3000
-
-## 数据库结构
-
-### 主要表
-- `discount_income` - 折扣收益
-- `commission_reward` - 提成奖励
-- `points_discount` - 积分优惠
-- `expense` - 资金支出
-- `balance` - 资金分类余额
-- `credit_account` - 赊账记录
-- `rider` - 骑手信息
-- `rider_subsidy` - 骑手补贴
+| 变量 | 说明 |
+|------|------|
+| `DATABASE_URL` | PostgreSQL 数据库连接字符串 |
+| `PORT` | 服务器端口（可选，默认 3000）|
 
 ## 默认配置
 
@@ -115,52 +102,6 @@ npm start
 
 ### 支出统计
 - `GET /api/expense-summary?date=YYYY-MM-DD` - 按支付方式统计
-
-## 部署
-
-### 使用 PM2 (推荐)
-
-```bash
-npm install -g pm2
-pm2 start server.js --name financial-system
-pm2 save
-pm2 startup
-```
-
-### 使用 systemd
-
-创建 `/etc/systemd/system/financial-system.service`:
-
-```ini
-[Unit]
-Description=Financial Report System
-After=network.target
-
-[Service]
-Type=simple
-User=your-user
-WorkingDirectory=/path/to/financial-report-system
-ExecStart=/usr/bin/node /path/to/financial-report-system/server.js
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl enable financial-system
-sudo systemctl start financial-system
-```
-
-## 数据备份
-
-数据库文件: `database.db`
-
-定期备份:
-
-```bash
-cp database.db database.db.backup.$(date +%Y%m%d)
-```
 
 ## 许可证
 
