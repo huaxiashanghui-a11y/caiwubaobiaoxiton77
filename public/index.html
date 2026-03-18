@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>财务报表系统 - 北苍星际速充</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🏙️ 财务报表系统</h1>
+      <p class="subtitle">北苍星际速充</p>
+      <div class="date-nav">
+        <button onclick="changeDate(-1)">◀ 前一天</button>
+        <input type="date" id="currentDate" value="" onchange="loadAllData()">
+        <button onclick="changeDate(1)">后一天 ▶</button>
+        <button onclick="setToday()">今天</button>
+      </div>
+    </header>
+
+    <!-- 仪表盘 -->
+    <section class="dashboard">
+      <h2>📊 仪表盘</h2>
+      <div class="dashboard-grid" id="dashboard">
+        <div class="card">
+          <div class="label">折扣余额</div>
+          <div class="value" id="val-discount">¥0</div>
+        </div>
+        <div class="card">
+          <div class="label">积分余额</div>
+          <div class="value" id="val-points">¥0</div>
+        </div>
+        <div class="card">
+          <div class="label">提成余额</div>
+          <div class="value" id="val-commission">¥0</div>
+        </div>
+        <div class="card">
+          <div class="label">支出余额</div>
+          <div class="value expense" id="val-expense">¥0</div>
+        </div>
+        <div class="card">
+          <div class="label">补价余额</div>
+          <div class="value expense" id="val-subsidy">¥0</div>
+        </div>
+        <div class="card">
+          <div class="label">赊账余额</div>
+          <div class="value expense" id="val-credit">¥0</div>
+        </div>
+        <div class="card highlight">
+          <div class="label">当日余额</div>
+          <div class="value" id="val-daily">¥0</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="main-content">
+      <!-- 左侧：数据录入 -->
+      <div class="left-panel">
+        <!-- 折扣收益 -->
+        <section class="module">
+          <h2>💰 折扣收益</h2>
+          <div class="input-group">
+            <input type="number" id="discount-amount" placeholder="金额" step="0.01">
+            <input type="text" id="discount-desc" placeholder="描述">
+            <button onclick="addDiscount()">添加</button>
+          </div>
+          <div class="total">总计: <span id="discount-total">¥0</span></div>
+          <div class="list" id="discount-list"></div>
+        </section>
+
+        <!-- 提成奖励 -->
+        <section class="module">
+          <h2>🎁 提成奖励</h2>
+          <div class="input-group">
+            <input type="number" id="commission-amount" placeholder="金额" step="0.01">
+            <input type="text" id="commission-product" placeholder="商品名称">
+            <input type="text" id="commission-desc" placeholder="描述">
+            <button onclick="addCommission()">添加</button>
+          </div>
+          <div class="total">总计: <span id="commission-total">¥0</span></div>
+          <div class="list" id="commission-list"></div>
+        </section>
+
+        <!-- 积分优惠 -->
+        <section class="module">
+          <h2>🏆 积分优惠</h2>
+          <div class="input-group">
+            <input type="number" id="points-amount" placeholder="金额" step="0.01">
+            <input type="text" id="points-customer" placeholder="客户名称">
+            <input type="text" id="points-desc" placeholder="描述">
+            <button onclick="addPoints()">添加</button>
+          </div>
+          <div class="total">总计: <span id="points-total">¥0</span></div>
+          <div class="list" id="points-list"></div>
+        </section>
+
+        <!-- 资金支出 -->
+        <section class="module">
+          <h2>💸 资金支出</h2>
+          <div class="input-group">
+            <input type="number" id="expense-amount" placeholder="金额" step="0.01">
+            <select id="expense-category">
+              <option value="">分类</option>
+              <option value="采购">采购</option>
+              <option value="配送">配送</option>
+              <option value="其他">其他</option>
+            </select>
+            <select id="expense-method">
+              <option value="">支付方式</option>
+              <option value="微信">微信</option>
+              <option value="支付宝">支付宝</option>
+              <option value="云闪付">云闪付</option>
+              <option value="KBZ">KBZ</option>
+              <option value="USDT">USDT</option>
+              <option value="人民币现金">人民币现金</option>
+              <option value="缅币">缅币</option>
+            </select>
+            <input type="text" id="expense-desc" placeholder="描述">
+            <button onclick="addExpense()">添加</button>
+          </div>
+          <div class="total">总计: <span id="expense-total">¥0</span></div>
+          <div class="list" id="expense-list"></div>
+        </section>
+
+        <!-- 赊账记录 -->
+        <section class="module">
+          <h2>📋 赊账记录</h2>
+          <div class="input-group">
+            <input type="text" id="credit-customer" placeholder="客户昵称">
+            <input type="text" id="credit-telegram" placeholder="Telegram账号">
+            <input type="text" id="credit-wechat" placeholder="微信号">
+            <input type="text" id="credit-phone" placeholder="手机号">
+            <input type="number" id="credit-amount" placeholder="赊账金额" step="0.01">
+            <button onclick="addCredit()">添加</button>
+          </div>
+          <div class="filter">
+            <label>
+              <input type="radio" name="credit-filter" value="" checked onchange="loadCredit()">全部
+            </label>
+            <label>
+              <input type="radio" name="credit-filter" value="未结账" onchange="loadCredit()">未结账
+            </label>
+            <label>
+              <input type="radio" name="credit-filter" value="已结账" onchange="loadCredit()">已结账
+            </label>
+          </div>
+          <div class="summary">
+            未结账: <span id="credit-unpaid">¥0</span> | 已结账: <span id="credit-paid">¥0</span>
+          </div>
+          <div class="list" id="credit-list"></div>
+        </section>
+
+        <!-- 骑手补贴 -->
+        <section class="module">
+          <h2>🏍️ 骑手补贴</h2>
+          <div class="tabs">
+            <button class="tab active" onclick="setSubsidyRange('day')">当日</button>
+            <button class="tab" onclick="setSubsidyRange('month')">当月</button>
+          </div>
+          <div class="input-group">
+            <select id="rider-select">
+              <option value="">选择骑手</option>
+            </select>
+            <input type="number" id="subsidy-amount" placeholder="补价金额" step="0.01">
+            <input type="number" id="advance-amount" placeholder="垫付金额" step="0.01">
+            <input type="text" id="subsidy-desc" placeholder="描述">
+            <button onclick="addSubsidy()">添加</button>
+          </div>
+          <div class="summary">
+            补价总计: <span id="subsidy-total">¥0</span> | 垫付总计: <span id="advance-total">¥0</span>
+          </div>
+          <div class="list" id="subsidy-list"></div>
+        </section>
+      </div>
+
+      <!-- 右侧：资金分类 -->
+      <div class="right-panel">
+        <section class="module">
+          <h2>💳 资金分类</h2>
+          <div class="balance-list" id="balance-list"></div>
+        </section>
+
+        <section class="module">
+          <h2>📊 支出统计</h2>
+          <div class="expense-summary" id="expense-summary"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
